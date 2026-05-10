@@ -5,8 +5,8 @@ import io.github.aoguai.sesameag.data.RuntimeInfo
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.data.Statistics
-import io.github.aoguai.sesameag.entity.AlipayUser
 import io.github.aoguai.sesameag.entity.CollectEnergyEntity
+import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
 import io.github.aoguai.sesameag.entity.KVMap
 import io.github.aoguai.sesameag.entity.OtherEntityProvider.listEcoLifeOptions
 import io.github.aoguai.sesameag.entity.OtherEntityProvider.listHealthcareOptions
@@ -27,6 +27,8 @@ import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionCountModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.SelectAndCountModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
@@ -58,6 +60,8 @@ import io.github.aoguai.sesameag.util.TimeTriggerDecision
 import io.github.aoguai.sesameag.util.TimeTriggerEvaluator
 import io.github.aoguai.sesameag.util.TimeTriggerParseOptions
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
+import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.UserMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
@@ -164,7 +168,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private var advanceTime: IntegerModelField? = null // 提前时间（毫秒）
     private var tryCount: IntegerModelField? = null // 尝试收取次数
     private var retryInterval: IntegerModelField? = null // 重试间隔（毫秒）
-    private var dontCollectList: SelectModelField? = null // 不收取能量的用户列表
+    private var dontCollectList: FriendSelectionModelField? = null // 不收取能量的用户列表
     internal var collectWateringBubble: BooleanModelField? = null // 收取浇水金球开关
     private var batchRobEnergy: BooleanModelField? = null // 批量收取能量开关
     private var collectSelfEnergyType: ChoiceModelField? = null // 收自己能量方式
@@ -196,7 +200,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private var shieldCard: ChoiceModelField? = null // 保护罩
     private var shieldCardConstant: BooleanModelField? = null // 限时保护永动机
     private var helpFriendCollectType: ChoiceModelField? = null
-    private var helpFriendCollectList: SelectModelField? = null
+    private var helpFriendCollectList: FriendSelectionModelField? = null
     private var helpFriendCollectListLimit: IntegerModelField? = null
 
     // 显示背包内容
@@ -207,7 +211,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private var returnWater18: IntegerModelField? = null
     private var returnWater10: IntegerModelField? = null
     internal var receiveForestTaskAward: BooleanModelField? = null
-    private var waterFriendList: SelectAndCountModelField? = null
+    private var waterFriendList: FriendSelectionCountModelField? = null
     private var waterFriendCount: IntegerModelField? = null
     private var notifyFriend: BooleanModelField? = null
     internal var vitalityExchange: BooleanModelField? = null
@@ -217,7 +221,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     internal var forestMarket: BooleanModelField? = null
     internal var combineAnimalPiece: BooleanModelField? = null
     private var consumeAnimalProp: BooleanModelField? = null
-    private var whoYouWantToGiveTo: SelectModelField? = null
+    private var whoYouWantToGiveTo: FriendSelectionModelField? = null
     internal var dailyCheckIn: BooleanModelField? = null //青春特权签到
     private var bubbleBoostCard: ChoiceModelField? = null //加速卡
     internal var youthPrivilege: BooleanModelField? = null //青春特权 森林道具
@@ -281,7 +285,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private val forestTaskTryCount: ConcurrentHashMap<String, AtomicInteger> = ConcurrentHashMap<String, AtomicInteger>()
     private var lastPatrolId: Int = 0
 
-    private var jsonCollectMap: MutableSet<String?> = HashSet()
+    private var jsonCollectMap: Set<String> = emptySet()
 
     var emojiList: ArrayList<String> = ArrayList(
         listOf(
@@ -370,7 +374,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         if (type == HelpFriendCollectType.NONE || rebornWeeklyCompleted) {
             return false
         }
-        if (type == HelpFriendCollectType.HELP && helpFriendCollectList?.value.isNullOrEmpty()) {
+        if (type == HelpFriendCollectType.HELP && helpFriendCollectList?.isEmpty() != false) {
             return false
         }
         return true
@@ -481,19 +485,17 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             ).withDesc("好友挂炸弹卡时，单个能量球达到该值才尝试收取；0 表示不额外放宽。").also { collectBombEnergyLimit = it }
         )
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "dontCollectList",
-                "不收能量 | 配置列表",
-                LinkedHashSet<String?>()
-            ) { AlipayUser.getFriendList() }.withDesc("这些好友不参与自动收取能量。").also {
+                "不收能量 | 配置列表"
+            ).withDesc("这些好友不参与自动收取能量。").also {
                 dontCollectList = it
             })
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "giveEnergyRainList",
-                "赠送能量雨 | 配置列表",
-                LinkedHashSet<String?>()
-            ) { AlipayUser.getFriendList() }.withDesc("能量雨机会赠送给这些好友。").also {
+                "赠送能量雨 | 配置列表"
+            ).withDesc("能量雨机会赠送给这些好友。").also {
                 giveEnergyRainList = it
             })
         modelFields.addField(
@@ -636,12 +638,9 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 0
             ).withDesc("对同一好友当日收能量达到该值后，才自动回浇 33 克；0 为关闭。").also { returnWater33 = it })
         modelFields.addField(
-            SelectAndCountModelField(
+            FriendSelectionCountModelField(
                 "waterFriendList",
-                "浇水 | 好友列表",
-                LinkedHashMap<String?, Int?>(),
-                { AlipayUser.getFriendList() },
-                "记得设置浇水次数"
+                "浇水 | 好友列表"
             ).withDesc("配置需要浇水的好友及每日浇水次数。").also { waterFriendList = it })
         modelFields.addField(
             IntegerModelField(
@@ -662,12 +661,9 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 false
             ).withDesc("自动把可赠送的森林道具送给好友。").also { giveProp = it })
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "whoYouWantToGiveTo",
-                "赠送 | 道具",
-                LinkedHashSet<String?>(),
-                { AlipayUser.getFriendList() },
-                "所有可赠送的道具将全部赠"
+                "赠送 | 道具"
             ).withDesc("选择允许接收森林道具的好友。").also { whoYouWantToGiveTo = it })
         modelFields.addField(
             BooleanModelField(
@@ -683,11 +679,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 HelpFriendCollectType.nickNames
             ).withDesc("控制是否帮好友复活过期能量以及名单的解释方式。").also { helpFriendCollectType = it })
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "helpFriendCollectList",
-                "复活能量 | 好友列表",
-                LinkedHashSet<String?>()
-            ) { AlipayUser.getFriendList() }.withDesc("配置允许复活能量的好友名单。").also {
+                "复活能量 | 好友列表"
+            ).withDesc("配置复活能量选项对应好友名单。").also {
                 helpFriendCollectList = it
             })
         modelFields.addField(
@@ -940,7 +935,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         advanceTime!!.value
 
 
-        jsonCollectMap = dontCollectList?.value ?: HashSet<String?>()
+        jsonCollectMap = dontCollectList?.resolvedIds() ?: emptySet()
 
         // 创建收取间隔实体
         collectIntervalEntity = createSafeIntervalLimit(
@@ -963,8 +958,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private fun computeRebornConfigSignature(): String {
         val type = helpFriendCollectType?.value ?: HelpFriendCollectType.NONE
         val limit = helpFriendCollectListLimit?.value ?: 0
-        val rawIds = helpFriendCollectList?.value ?: emptySet()
-        val ids = rawIds.filterNotNull().sorted()
+        val ids = helpFriendCollectList?.resolvedIds()?.sorted() ?: emptyList()
         var hash = 1
         for (id in ids) {
             hash = 31 * hash + id.hashCode()
@@ -1542,7 +1536,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 Log.forest("waterFriends: 当前用户为空，跳过浇水")
                 return
             }
-            val friendMap = waterFriendList?.value ?: emptyMap()
+            val friendMap = waterFriendList?.resolvedCountMap() ?: emptyMap()
             val notify = notifyFriend?.value == true // 获取通知开关状态
             val maxFriendWaterCount = waterFriendCount?.value ?: waterFriendCount?.defaultValue ?: 0
 
@@ -1552,12 +1546,12 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     Log.forest("waterFriends: 检测到切号，终止浇水流程")
                     break
                 }
-                val uid = friendEntry.key ?: continue
+                val uid = friendEntry.key
                 if (selfId == uid) {
                     continue
                 }
                 var waterCount = friendEntry.value
-                if (waterCount == null || waterCount <= 0) {
+                if (waterCount <= 0) {
                     continue
                 }
                 waterCount = min(waterCount, 3)
@@ -1688,6 +1682,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 Log.record(TAG, "查询好友森林主页[$actualFromAct] 跳过自己账号[$safeUserId]")
                 return null
             }
+            if (FriendRepository.isGlobalBlocked(safeUserId)) {
+                val maskName = UserMap.getMaskName(safeUserId) ?: safeUserId
+                Log.record(TAG, "查询好友森林主页[$actualFromAct] 跳过[$maskName]：好友中心全局黑名单")
+                return null
+            }
         } else {
             if (FriendGuard.shouldSkipFriend(safeUserId, TAG, "查询好友森林主页[$actualFromAct]")) {
                 return null
@@ -1716,6 +1715,15 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 return queryFriendHome(safeUserId, fallbackFromAct, forceRefresh = true, source = source)
             }
             if (resultCode == "FRIEND_NOT_FOREST_USER" || resultDesc.contains("未开通")) {
+                if (!allowPkRelation) {
+                    FriendCapabilityRecorder.record(
+                        safeUserId,
+                        "FOREST",
+                        FriendCapabilityState.NOT_OPEN,
+                        "AntForest.queryFriendHomePage",
+                        resultDesc.ifBlank { resultCode }
+                    )
+                }
                 Log.forest("蚂蚁森林好友流程跳过[${UserMap.getMaskName(safeUserId) ?: safeUserId}]：对方未开通蚂蚁森林")
                 return null
             }
@@ -1724,6 +1732,9 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 // 检测并记录"手速太快"错误，避免日志刷屏
                 ForestUtil.checkAndRecordFrequencyError(safeUserId, friendHomeObj)
                 return null
+            }
+            if (!allowPkRelation) {
+                FriendCapabilityRecorder.record(safeUserId, "FOREST", FriendCapabilityState.OPEN, "AntForest.queryFriendHomePage")
             }
             friendHomeCache[cacheKey] = friendHomeObj
             val end = System.currentTimeMillis()
@@ -2915,7 +2926,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         val type = helpFriendCollectType?.value ?: HelpFriendCollectType.NONE
         if (type == HelpFriendCollectType.NONE) return false
 
-        val selected = helpFriendCollectList?.value?.contains(userId) == true
+        val selected = helpFriendCollectList?.contains(userId) == true
         return when (type) {
             HelpFriendCollectType.HELP -> selected
             HelpFriendCollectType.EXCLUDE -> !selected
@@ -4734,10 +4745,9 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     }
 
     internal fun giveProp() {
-        val set = whoYouWantToGiveTo?.value ?: emptySet()
+        val set = whoYouWantToGiveTo?.resolvedIds() ?: emptySet()
         if (set.isNotEmpty()) {
-            for (uid in set) {
-                val userId = uid ?: continue
+            for (userId in set) {
                 if (FriendGuard.shouldSkipFriend(userId, TAG, "赠送森林道具")) continue
                 if (queryFriendHome(userId, "giveProp") == null) continue
                 giveProp(userId)
@@ -6637,7 +6647,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         // 保持向后兼容
         /** 保护罩续写阈值（HHmm），例如 2359 表示 23小时59分  */
         private const val SHIELD_RENEW_THRESHOLD_HHMM = 2359
-        var giveEnergyRainList: SelectModelField? = null //能量雨赠送列表
+        var giveEnergyRainList: FriendSelectionModelField? = null //能量雨赠送列表
         var medicalHealthOption: SelectModelField? = null //医疗健康选项
         var ecoLifeOption: SelectModelField? = null
 

@@ -3,7 +3,7 @@ package io.github.aoguai.sesameag.task.antOcean
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.entity.AlipayBeach
-import io.github.aoguai.sesameag.entity.AlipayUser
+import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
 import io.github.aoguai.sesameag.hook.Toast
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.model.ModelFields
@@ -11,8 +11,8 @@ import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.SelectAndCountModelField
-import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskCommon
@@ -25,6 +25,7 @@ import io.github.aoguai.sesameag.util.maps.IdMapManager
 import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.TaskBlacklist
+import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -138,7 +139,7 @@ class AntOcean : ModelTask() {
     /**
      * 清理 | 好友列表
      */
-    private var cleanOceanList: SelectModelField? = null
+    private var cleanOceanList: FriendSelectionModelField? = null
 
     /**
      * 神奇海洋 | 制作万能拼图
@@ -212,11 +213,9 @@ class AntOcean : ModelTask() {
             ).withDesc("决定列表中的好友是清理还是跳过。").also { cleanOceanType = it }
         )
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "cleanOceanList",
-                "清理 | 好友列表",
-                LinkedHashSet(),
-                AlipayUser::getFriendListAsMapperEntity
+                "清理 | 好友列表"
             ).withDesc("配置要参与清理规则的好友列表。").also { cleanOceanList = it }
         )
         modelFields.addField(
@@ -448,6 +447,15 @@ class AntOcean : ModelTask() {
             desc.contains("清理好友海域的次数已达上限") ||
             desc.contains("清理次数已达20次上限") ||
             desc.contains("已达20次上限")
+    }
+
+    private fun isOceanFriendNotOpen(jo: JSONObject): Boolean {
+        val resultCode = jo.optString("resultCode").ifBlank { jo.optString("code") }
+        val desc = extractOceanResultDesc(jo)
+        return resultCode == "USER_NOT_OPEN" ||
+            resultCode == "NOT_OPEN" ||
+            desc.contains("未开通") ||
+            desc.contains("未完成引导")
     }
 
     private fun markHelpCleanLimit(jo: JSONObject) {
@@ -1118,7 +1126,7 @@ class AntOcean : ModelTask() {
             if (FriendGuard.shouldSkipFriend(userId, TAG, "神奇海洋好友清理")) {
                 return
             }
-            var isOceanClean = cleanOceanList?.value?.contains(userId) == true
+            var isOceanClean = cleanOceanList?.contains(userId) == true
             if (cleanOceanType?.value == CleanOceanType.DONT_CLEAN) {
                 isOceanClean = !isOceanClean
             }
@@ -1128,6 +1136,7 @@ class AntOcean : ModelTask() {
             var s = AntOceanRpcCall.queryFriendPage(userId)
             var jo = JsonUtil.parseJSONObjectOrNull(s) ?: return
             if (ResChecker.checkRes(TAG, jo)) {
+                FriendCapabilityRecorder.record(userId, "OCEAN", FriendCapabilityState.OPEN, "AntOcean.queryFriendPage")
                 if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT)) {
                     return
                 }
@@ -1150,6 +1159,15 @@ class AntOcean : ModelTask() {
                 if (isHelpCleanLimit(jo)) {
                     markHelpCleanLimit(jo)
                 } else {
+                    if (isOceanFriendNotOpen(jo)) {
+                        FriendCapabilityRecorder.record(
+                            userId,
+                            "OCEAN",
+                            FriendCapabilityState.NOT_OPEN,
+                            "AntOcean.queryFriendPage",
+                            extractOceanResultDesc(jo)
+                        )
+                    }
                     Log.runtime(TAG, extractOceanResultDesc(jo))
                 }
             }

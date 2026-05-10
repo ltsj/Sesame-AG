@@ -7,10 +7,9 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.aoguai.sesameag.entity.AntFarmIPChouChouLeBenefit
-import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
-import io.github.aoguai.sesameag.entity.AlipayUser
+import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
 import io.github.aoguai.sesameag.entity.MapperEntity
 import io.github.aoguai.sesameag.entity.OtherEntityProvider.farmFamilyOption
 import io.github.aoguai.sesameag.entity.ParadiseCoinBenefit
@@ -22,6 +21,8 @@ import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionCountModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.SelectAndCountModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
@@ -47,6 +48,8 @@ import io.github.aoguai.sesameag.util.TimeCounter
 import io.github.aoguai.sesameag.util.TimeTriggerEvaluator
 import io.github.aoguai.sesameag.util.TimeTriggerParseOptions
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
+import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.IdMapManager
 import io.github.aoguai.sesameag.util.maps.ParadiseCoinBenefitIdMap
 import io.github.aoguai.sesameag.util.maps.UserMap
@@ -174,7 +177,7 @@ class AntFarm : ModelTask() {
     /**
      * 遣返好友列表
      */
-    private var sendBackAnimalList: SelectModelField? = null
+    private var sendBackAnimalList: FriendSelectionModelField? = null
 
     /**
      * 召回小鸡
@@ -232,12 +235,12 @@ class AntFarm : ModelTask() {
     /**
      * 喂鸡列表
      */
-    private var feedFriendAnimalList: SelectAndCountModelField? = null
+    private var feedFriendAnimalList: FriendSelectionCountModelField? = null
     internal var notifyFriend: BooleanModelField? = null
     private var notifyFriendType: ChoiceModelField? = null
-    private var notifyFriendList: SelectModelField? = null
+    private var notifyFriendList: FriendSelectionModelField? = null
     private var acceptGift: BooleanModelField? = null
-    private var visitFriendList: SelectAndCountModelField? = null
+    private var visitFriendList: FriendSelectionCountModelField? = null
     internal var chickenDiary: BooleanModelField? = null
     private var diaryTietie: BooleanModelField? = null
     private var collectChickenDiary: ChoiceModelField? = null
@@ -252,14 +255,14 @@ class AntFarm : ModelTask() {
     private var listOrnaments: BooleanModelField? = null
     internal var hireAnimal: BooleanModelField? = null
     private var hireAnimalType: ChoiceModelField? = null
-    private var hireAnimalList: SelectModelField? = null
+    private var hireAnimalList: FriendSelectionModelField? = null
     internal var enableDdrawGameCenterAward: BooleanModelField? = null
     internal var getFeed: BooleanModelField? = null
-    private var getFeedlList: SelectModelField? = null
+    private var getFeedlList: FriendSelectionModelField? = null
     private var getFeedType: ChoiceModelField? = null
     internal var family: BooleanModelField? = null
     internal var familyOptions: SelectModelField? = null
-    internal var notInviteList: SelectModelField? = null
+    internal var notInviteList: FriendSelectionModelField? = null
     private val giftFamilyDrawFragment: StringModelField? = null
     internal var paradiseCoinExchangeBenefit: BooleanModelField? = null
     private var paradiseCoinExchangeBenefitList: SelectModelField? = null
@@ -448,12 +451,9 @@ class AntFarm : ModelTask() {
                 true
             ).withDesc("设置自动让小鸡起床的时间。").also { wakeUpTime = it })
         modelFields.addField(
-            SelectAndCountModelField(
+            FriendSelectionCountModelField(
                 "feedFriendAnimalList",
-                "帮喂小鸡 | 好友列表",
-                LinkedHashMap<String?, Int?>(),
-                { AlipayUser.getFriendList() },
-                "记得设置帮喂次数.."
+                "帮喂小鸡 | 好友列表"
             ).withDesc("配置帮喂好友及每日次数；列表中的数量表示可帮喂次数。").also {
                 feedFriendAnimalList = it
             })
@@ -476,11 +476,10 @@ class AntFarm : ModelTask() {
                 GetFeedType.nickNames
             ).withDesc("选择一起拿饲料的赠送策略。").also { getFeedType = it })
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "getFeedlList",
-                "一起拿饲料 | 好友列表",
-                LinkedHashSet<String?>()
-            ) { AlipayUser.getFriendList() }.withDesc("仅对选中的好友执行一起拿饲料。").also {
+                "一起拿饲料 | 好友列表"
+            ).withDesc("仅对选中的好友执行一起拿饲料。").also {
                 getFeedlList = it
             })
         modelFields.addField(BooleanModelField("acceptGift", "收麦子", false).withDesc(
@@ -489,12 +488,9 @@ class AntFarm : ModelTask() {
             acceptGift = it
         })
         modelFields.addField(
-            SelectAndCountModelField(
+            FriendSelectionCountModelField(
                 "visitFriendList",
-                "送麦子好友列表",
-                LinkedHashMap<String?, Int?>(),
-                { AlipayUser.getFriendList() },
-                "设置赠送次数？？"
+                "送麦子好友列表"
             ).withDesc("配置送麦子好友及每日赠送次数。需开启“到访小鸡送礼”。").also {
                 visitFriendList = it
             })
@@ -514,11 +510,10 @@ class AntFarm : ModelTask() {
                 hireAnimalType = it
             })
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "hireAnimalList",
-                "雇佣小鸡 | 好友列表",
-                LinkedHashSet<String?>()
-            ) { AlipayUser.getFriendList() }.withDesc("仅在选中的好友列表内尝试雇佣小鸡。").also {
+                "雇佣小鸡 | 好友列表"
+            ).withDesc("仅在选中的好友列表内尝试雇佣小鸡。").also {
                 hireAnimalList = it
             })
         modelFields.addField(
@@ -560,11 +555,10 @@ class AntFarm : ModelTask() {
                 sendBackAnimalType = it
             })
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "dontSendFriendList",
-                "遣返 | 好友列表",
-                LinkedHashSet<String?>()
-            ) { AlipayUser.getFriendList() }.withDesc("设置遣返规则作用的好友名单。").also {
+                "遣返 | 好友列表"
+            ).withDesc("设置遣返规则作用的好友名单。").also {
                 sendBackAnimalList = it
             })
         modelFields.addField(
@@ -583,11 +577,10 @@ class AntFarm : ModelTask() {
                 notifyFriendType = it
             })
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "notifyFriendList",
-                "通知赶鸡 | 好友列表",
-                LinkedHashSet<String?>()
-            ) { AlipayUser.getFriendList() }.withDesc("设置通知规则作用的好友名单。需开启“通知赶鸡 | 开启”。").also {
+                "通知赶鸡 | 好友列表"
+            ).withDesc("设置通知规则作用的好友名单。需开启“通知赶鸡 | 开启”。").also {
                 notifyFriendList = it
             })
         modelFields.addField(
@@ -686,11 +679,10 @@ class AntFarm : ModelTask() {
                 farmFamilyOption()
             ).withDesc("勾选允许自动执行的家庭任务类型。").also { familyOptions = it })
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "notInviteList",
-                "家庭 | 好友分享排除列表",
-                LinkedHashSet<String?>()
-            ) { AlipayUser.getFriendList() }.withDesc("家庭分享或邀请时排除这些好友。").also {
+                "家庭 | 好友分享排除列表"
+            ).withDesc("家庭分享或邀请时排除这些好友。").also {
                 notInviteList = it
             })
         //        modelFields.addField(giftFamilyDrawFragment = new StringModelField("giftFamilyDrawFragment", "家庭 | 扭蛋碎片赠送用户ID(配置目录查看)", ""));
@@ -1549,8 +1541,11 @@ class AntFarm : ModelTask() {
             for (animal in animals) {
                 if (AnimalInteractStatus.STEALING.name == animal.animalInteractStatus && (SubAnimalType.GUEST.name != animal.subAnimalType) && (SubAnimalType.WORK.name != animal.subAnimalType)) {
                     // 赶鸡
-                    var user = AntFarmRpcCall.farmId2UserId(animal.masterFarmId)
-                    var isSendBackAnimal = sendBackAnimalList?.value?.contains(user) == true
+                    val userId = AntFarmRpcCall.farmId2UserId(animal.masterFarmId)
+                    if (FriendGuard.shouldSkipFriend(userId, TAG, "庄园遣返")) {
+                        continue
+                    }
+                    var isSendBackAnimal = sendBackAnimalList?.contains(userId) == true
                     if (sendBackAnimalType?.value == SendBackAnimalType.BACK) {
                         isSendBackAnimal = !isSendBackAnimal
                     }
@@ -1559,7 +1554,7 @@ class AntFarm : ModelTask() {
                     }
                     val sendTypeInt = (sendBackAnimalWay?.value ?: SendBackAnimalWay.NORMAL)
                         .coerceIn(0, SendBackAnimalWay.nickNames.size - 1)
-                    user = UserMap.getMaskName(user)
+                    val user = UserMap.getMaskName(userId) ?: userId
                     val s = AntFarmRpcCall.sendBackAnimal(
                         SendBackAnimalWay.nickNames[sendTypeInt],
                         animal.animalId,
@@ -3074,7 +3069,7 @@ class AntFarm : ModelTask() {
                 return false
             }
 
-            val feedFriendAnimalMap: Map<String?, Int?> = feedFriendAnimalList?.value ?: emptyMap()
+            val feedFriendAnimalMap = feedFriendAnimalList?.resolvedCountMap() ?: emptyMap()
             val useFamilyFeedForMembers =
                 family?.value == true && familyOptions?.value?.contains("feedFamilyAnimal") == true
             val feedFriendEntries = if (useFamilyFeedForMembers) {
@@ -3085,19 +3080,15 @@ class AntFarm : ModelTask() {
                     .sortedByDescending { AntFarmFamily.isFamilyMember(it.key) }
             }
             for (entry in feedFriendEntries) {
-                val userId = entry.key?.trim().orEmpty()
-                val maxDailyCount = entry.value ?: 0
+                val userId = entry.key.trim()
+                val maxDailyCount = entry.value
                 if (userId.isBlank() || maxDailyCount <= 0) {
                     continue
                 }
 
-                // 自己不应出现在好友喂鸡配置中，发现后直接移除并跳过
+                // 自己不应进入实际执行结果；这里仅跳过本轮，不再运行时修改持久配置。
                 if (userId == UserMap.currentUid) {
-                    if (feedFriendAnimalList?.contains(userId) == true) {
-                        feedFriendAnimalList?.remove(userId)
-                        Config.save(UserMap.currentUid, true)
-                        Log.farm("检测到“帮喂小鸡 | 好友列表”包含自己，已自动移除")
-                    }
+                    Log.farm("检测到“帮喂小鸡 | 好友列表”包含自己，已跳过")
                     continue
                 }
 
@@ -3200,7 +3191,7 @@ class AntFarm : ModelTask() {
                         jo = jaRankingList.getJSONObject(i)
                         val userId = jo.getString("userId")
                         val userName = UserMap.getMaskName(userId)
-                        var isNotifyFriend = notifyFriendList?.value?.contains(userId) == true
+                        var isNotifyFriend = notifyFriendList?.contains(userId) == true
                         if (notifyFriendType?.value == NotifyFriendType.DONT_NOTIFY) {
                             isNotifyFriend = !isNotifyFriend
                         }
@@ -3713,12 +3704,12 @@ class AntFarm : ModelTask() {
     internal suspend fun visit() {
         val pendingInvalidUserIds = linkedSetOf<String>()
         try {
-            val map: Map<String?, Int?> = visitFriendList?.value ?: emptyMap()
+            val map = visitFriendList?.resolvedCountMap() ?: emptyMap()
             if (map.isEmpty()) return
             val currentUid = UserMap.currentUid
             for (entry in map.entries.toList()) {
-                val userId = entry.key?.trim().orEmpty()
-                val count = entry.value ?: 0
+                val userId = entry.key.trim()
+                val count = entry.value
                 // 跳过自己和非法数量
                 if (userId.isBlank() || userId == currentUid || count <= 0) continue
                 // 限制最大访问次数
@@ -3754,6 +3745,13 @@ class AntFarm : ModelTask() {
         val jo = JSONObject(AntFarmRpcCall.enterFarm(safeUserId, safeUserId))
         val memo = jo.optString("memo")
         if (jo.optString("resultCode") == "304" || memo.contains("查询庄园不存在")) {
+            FriendCapabilityRecorder.record(
+                safeUserId,
+                "FARM",
+                FriendCapabilityState.NOT_OPEN,
+                "AntFarm.enterFarm",
+                memo.ifBlank { "查询庄园不存在" }
+            )
             Log.farm("$sceneName 跳过[${UserMap.getMaskName(safeUserId) ?: safeUserId}]：对方未开通蚂蚁庄园")
             return null
         }
@@ -3761,6 +3759,7 @@ class AntFarm : ModelTask() {
             return null
         }
         if (ResChecker.checkRes(TAG, jo)) {
+            FriendCapabilityRecorder.record(safeUserId, "FARM", FriendCapabilityState.OPEN, "AntFarm.enterFarm")
             return jo
         }
         Log.error(TAG, "$sceneName 进入好友庄园失败[$safeUserId]> $jo")
@@ -3823,7 +3822,8 @@ class AntFarm : ModelTask() {
             return false
         }
         if (pendingInvalidUserIds.add(userId)) {
-            Log.farm("$sceneName 检测到[$userId]已非好友，待当前流程结束后清理相关配置")
+            FriendRepository.markRemoved(UserMap.currentUid, userId)
+            Log.farm("$sceneName 检测到[$userId]已非好友，已标记为失效好友")
         }
         return true
     }
@@ -3832,15 +3832,7 @@ class AntFarm : ModelTask() {
         if (invalidUserIds.isEmpty()) {
             return
         }
-        val removedCount = Config.removeInvalidFriendSelections(
-            invalidUserIds,
-            UserMap.currentUid,
-            autoSave = false
-        )
-        if (removedCount > 0) {
-            Config.save(UserMap.currentUid, true)
-            Log.farm("$sceneName 已自动清理 $removedCount 项失效好友相关配置")
-        }
+        Log.farm("$sceneName 已标记 ${invalidUserIds.size} 个失效好友，后续好友选择会自动过滤")
     }
 
     private fun shouldAcceptGift(subFarmVO: JSONObject): Boolean {
@@ -4163,7 +4155,7 @@ class AntFarm : ModelTask() {
             }
 
             // 前置检查：是否配置了雇佣好友列表
-            val hireAnimalSet = hireAnimalList?.value ?: emptySet()
+            val hireAnimalSet = hireAnimalList?.resolvedIds() ?: emptySet()
             if (hireAnimalSet.isEmpty()) {
                 if (hireAnimalType!!.value == HireAnimalType.HIRE) {
                     Log.farm("❌ 雇佣失败：未配置雇佣好友列表")
@@ -4202,6 +4194,9 @@ class AntFarm : ModelTask() {
                     for (i in 0..<jaRankingList.length()) {
                         val joo = jaRankingList.getJSONObject(i)
                         val userId = joo.getString("userId")
+                        if (FriendGuard.shouldSkipFriend(userId, TAG, "雇佣小鸡")) {
+                            continue
+                        }
                         var isHireAnimal = hireAnimalSet.contains(userId)
                         if (hireAnimalType!!.value == HireAnimalType.DONT_HIRE) {
                             isHireAnimal = !isHireAnimal
@@ -4627,7 +4622,7 @@ class AntFarm : ModelTask() {
                 if (invitesToSend == 0) {
                     return
                 }
-                val getFeedSet = getFeedlList?.value ?: emptySet()
+                val getFeedSet = getFeedlList?.resolvedIds() ?: emptySet()
                 if (getFeedType!!.value == GetFeedType.GIVE) {
                     for (userId in userIdList) {
                         if (invitesToSend <= 0) {
@@ -4981,7 +4976,7 @@ class AntFarm : ModelTask() {
             if (Status.hasFlagToday(StatusFlags.FLAG_FARM_INVITE_FRIEND_VISIT_FAMILY)) {
                 return
             }
-            val familyValue: Set<String?> = notInviteList?.value ?: emptySet()
+            val familyValue = notInviteList?.resolvedIds() ?: emptySet()
             if (familyValue.isEmpty()) {
                 return
             }
@@ -5285,8 +5280,7 @@ class AntFarm : ModelTask() {
                     val groupId = animal.getString("groupId")
                     val farmId = animal.getString("farmId")
                     val userId = animal.getString("userId")
-                    if (!UserMap.getUserIdSet().contains(userId)) {
-                        //非好友
+                    if (FriendGuard.shouldSkipFriend(userId, TAG, "庄园家庭帮喂")) {
                         continue
                     }
                     if (Status.hasFlagToday(StatusFlags.FLAG_FARM_FEED_FRIEND_LIMIT)) {

@@ -125,7 +125,7 @@ object EnergyRainCoroutine {
                     } else {
                         val joEnergyRainCanGrantList = JSONObject(AntForestRpcCall.queryEnergyRainCanGrantList())
                         val grantInfos = joEnergyRainCanGrantList.optJSONArray("grantInfos") ?: org.json.JSONArray()
-                        val giveEnergyRainSet = AntForest.giveEnergyRainList?.value ?: emptySet()
+                        val giveEnergyRainSet = AntForest.giveEnergyRainList?.resolvedIds() ?: emptySet()
                         var granted = false
 
                         for (j in 0 until grantInfos.length()) {

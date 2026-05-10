@@ -2,8 +2,8 @@ package io.github.aoguai.sesameag.task.antFarm
 
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
-import io.github.aoguai.sesameag.entity.AlipayUser
 import io.github.aoguai.sesameag.extensions.JSONExtensions.toJSONArray
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
 import io.github.aoguai.sesameag.task.antFarm.AntFarm.AnimalFeedStatus
 import io.github.aoguai.sesameag.task.antFarm.AntFarm.AnimalInteractStatus
@@ -13,6 +13,7 @@ import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.RpcCache
+import io.github.aoguai.sesameag.util.friend.FriendSelectionResolver
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONArray
 import org.json.JSONObject
@@ -322,7 +323,7 @@ data object AntFarmFamily {
     }
 
 
-    fun run(familyOptions: SelectModelField, notInviteList: SelectModelField) {
+    fun run(familyOptions: SelectModelField, notInviteList: FriendSelectionModelField) {
         try {
             enterFamily(familyOptions, notInviteList)
         } catch (e: Exception) {
@@ -333,7 +334,7 @@ data object AntFarmFamily {
     /**
      * 进入家庭
      */
-    fun enterFamily(familyOptions: SelectModelField, notInviteList: SelectModelField) {
+    fun enterFamily(familyOptions: SelectModelField, notInviteList: FriendSelectionModelField) {
         try {
             groupId = ""
             groupName = ""
@@ -1094,14 +1095,14 @@ data object AntFarmFamily {
      * @param familyUserIds 好友列表
      * @param notInviteList 不邀请列表
      */
-    private fun familyShareToFriends(familyUserIds: MutableList<String>, notInviteList: SelectModelField) {
+    private fun familyShareToFriends(familyUserIds: MutableList<String>, notInviteList: FriendSelectionModelField) {
         try {
             if (Status.hasFlagToday(StatusFlags.FLAG_FARM_FAMILY_SHARE_TO_FRIENDS)) {
                 return
             }
 
-            val familyValue: MutableSet<String?> = notInviteList.value ?: mutableSetOf()
-            val allUser: List<AlipayUser> = AlipayUser.getFriendList()
+            val familyValue = notInviteList.resolvedIds()
+            val allUser = FriendSelectionResolver.availableFriendOptions()
 
             if (allUser.isEmpty()) {
                 Log.error(TAG, "allUser is empty")

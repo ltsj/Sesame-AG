@@ -3,15 +3,14 @@ package io.github.aoguai.sesameag.task.antOrchard
 import android.util.Base64
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
-import io.github.aoguai.sesameag.entity.AlipayUser
 import io.github.aoguai.sesameag.hook.internal.SecurityBodyHelper
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
-import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.FriendGuard
@@ -55,7 +54,7 @@ class AntOrchard : ModelTask() {
     internal lateinit var orchardSpreadManureCountMain: IntegerModelField
     internal lateinit var orchardSpreadManureCountYeb: IntegerModelField
 
-    private lateinit var assistFriendList: SelectModelField
+    private lateinit var assistFriendList: FriendSelectionModelField
     //模式选择
     private lateinit var plantModeField: ChoiceModelField
 
@@ -108,7 +107,7 @@ class AntOrchard : ModelTask() {
         )
 
         modelFields.addField(
-            SelectModelField("assistFriendList", "助力好友列表", LinkedHashSet(), AlipayUser::getFriendList).withDesc(
+            FriendSelectionModelField("assistFriendList", "助力好友列表").withDesc(
                 "仅对选中的好友执行助力流程。"
             ).also { assistFriendList = it }
         )
@@ -2287,7 +2286,7 @@ class AntOrchard : ModelTask() {
                 return
             }
 
-            val friendSet = assistFriendList.value ?: emptySet()
+            val friendSet = assistFriendList.resolvedIds()
             if (friendSet.isEmpty()) {
                 Log.orchard("未设置农场助力好友列表，跳过农场助力")
                 return

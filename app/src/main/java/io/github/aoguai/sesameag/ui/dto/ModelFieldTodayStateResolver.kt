@@ -4,6 +4,7 @@ import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.model.ModelField
 import io.github.aoguai.sesameag.model.ModelFields
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionCountModelField
 
 /**
  * 配置项在“今日状态”维度上的展示结果。
@@ -227,7 +228,7 @@ object ModelFieldTodayStateResolver {
                 flag(StatusFlags.FLAG_FARM_GAME_FINISHED, "今日小游戏改分已处理")
 
             "AntFarm.feedFriendAnimalList" ->
-                if (mapValue(modelField)?.isNotEmpty() == true) {
+                if (friendCountSelectionConfigured(modelField)) {
                     flag(StatusFlags.FLAG_FARM_FEED_FRIEND_LIMIT, "今日帮喂次数已达上限")
                 } else {
                     ModelFieldTodayState()
@@ -457,6 +458,11 @@ object ModelFieldTodayStateResolver {
             }
             ?.toMap()
             ?: emptyMap()
+    }
+
+    private fun friendCountSelectionConfigured(modelField: ModelField<*>?): Boolean {
+        val field = modelField as? FriendSelectionCountModelField ?: return mapValue(modelField)?.isNotEmpty() == true
+        return field.resolvedCountMap().isNotEmpty()
     }
 
     private fun stringSetValue(modelField: ModelField<*>?): Set<String> {

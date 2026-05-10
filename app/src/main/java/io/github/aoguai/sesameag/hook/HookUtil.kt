@@ -1,10 +1,10 @@
 package io.github.aoguai.sesameag.hook
 
 import android.content.Context
-import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.entity.UserEntity
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONObject
 import java.lang.reflect.Field
@@ -231,8 +231,17 @@ object HookUtil {
 
     fun hookUser(classLoader: ClassLoader) {
         runCatching {
-            val previousUsers = UserMap.getUserMap().toMap()
             val selfId = getUserId(classLoader)
+            if (selfId.isNullOrBlank()) {
+                Log.runtime(TAG, "hookUser 跳过：未获取到当前账号 userId")
+                return
+            }
+            val sameAccount = UserMap.currentUid == selfId
+            val previousUsers = if (sameAccount) {
+                UserMap.getUserMap().toMap()
+            } else {
+                emptyMap()
+            }
             UserMap.setCurrentUserId(selfId)
             val clsUserIndependentCache = loadClass(classLoader, "com.alipay.mobile.socialcommonsdk.bizdata.UserIndependentCache")
             val clsAliAccountDaoOp = loadClass(classLoader, "com.alipay.mobile.socialcommonsdk.bizdata.contact.data.AliAccountDaoOp")
@@ -240,7 +249,14 @@ object HookUtil {
                 ?: error("AliAccountDaoOp 缓存对象为空")
             val allFriends = callMethod(aliAccountDaoOp, "getAllFriends") as? List<*> ?: emptyList<Any>()
             if (allFriends.isEmpty()) {
-                Log.runtime(TAG, "好友缓存为空，跳过刷新并保留旧映射")
+                if (!sameAccount || UserMap.getUserMap().isEmpty()) {
+                    UserMap.load(selfId)
+                }
+                val cachedCenter = FriendRepository.current(selfId)
+                if (cachedCenter.profiles.isEmpty() && UserMap.getUserMap().isNotEmpty()) {
+                    FriendRepository.mergeFromUserMap(selfId, allowPruneMissing = false)
+                }
+                Log.runtime(TAG, "好友缓存为空，跳过刷新并保留旧好友中心")
                 return
             }
             UserMap.unload()
@@ -252,8 +268,6 @@ object HookUtil {
             val remarkNameField = findField(friendClass, "remarkName")
             val friendStatusField = findField(friendClass, "friendStatus")
             var selfEntity: UserEntity? = null
-            val syncedUserIds = LinkedHashSet<String>()
-            val invalidFriendIds = LinkedHashSet<String>()
             allFriends.forEach { userObject ->
                 runCatching {
                     val userId = userIdField.get(userObject) as? String
@@ -263,12 +277,6 @@ object HookUtil {
                     val remarkName = remarkNameField.get(userObject) as? String
                     val friendStatus = friendStatusField.get(userObject) as? Int
                     val userEntity = UserEntity(userId, account, friendStatus, name, nickName, remarkName)
-                    if (!userId.isNullOrEmpty()) {
-                        syncedUserIds.add(userId)
-                        if (userId != selfId && friendStatus != 1) {
-                            invalidFriendIds.add(userId)
-                        }
-                    }
                     if (userId == selfId) selfEntity = userEntity
                     UserMap.add(userEntity)
                 }.onFailure {
@@ -277,24 +285,9 @@ object HookUtil {
                 }
             }
 
-            val removedUserIds = previousUsers.keys
-                .filter { it != selfId && !syncedUserIds.contains(it) }
-                .toSet()
-            val invalidSelectionIds = LinkedHashSet<String>().apply {
-                addAll(removedUserIds)
-                addAll(invalidFriendIds)
-            }
-            val removedSelectionCount = Config.removeInvalidFriendSelections(
-                invalidSelectionIds,
-                selfId,
-                autoSave = false
-            )
-
             selfEntity?.let { UserMap.saveSelf(it) }
             UserMap.save(selfId)
-            if (removedSelectionCount > 0) {
-                Config.save(selfId, true)
-            }
+            FriendRepository.mergeFromUserMap(selfId, previousUsers, allowPruneMissing = true)
             Log.runtime(TAG, "userCache load scuess !")
         }.onFailure {
             Log.printStackTrace(TAG, "hookUser 失败", it)

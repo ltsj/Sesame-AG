@@ -3,14 +3,14 @@ package io.github.aoguai.sesameag.task.antDodo
 import org.json.JSONException
 import org.json.JSONArray
 import org.json.JSONObject
-import io.github.aoguai.sesameag.entity.AlipayUser
+import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
-import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskCommon
 import io.github.aoguai.sesameag.task.TaskStatus
@@ -21,13 +21,14 @@ import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 
 class AntDodo : ModelTask() {
 
     private var collectToFriend: BooleanModelField? = null
     private var collectToFriendType: ChoiceModelField? = null
-    private var collectToFriendList: SelectModelField? = null
-    private var sendFriendCard: SelectModelField? = null
+    private var collectToFriendList: FriendSelectionModelField? = null
+    private var sendFriendCard: FriendSelectionModelField? = null
     private var useProp: BooleanModelField? = null
     private var usePropCollectTimes7Days: BooleanModelField? = null
     private var usePropCollectHistoryAnimal7Days: BooleanModelField? = null
@@ -60,19 +61,15 @@ class AntDodo : ModelTask() {
             }
         )
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "collectToFriendList",
-                "帮抽卡 | 好友列表",
-                LinkedHashSet<String?>(),
-                AlipayUser::getFriendListAsMapperEntity
+                "帮抽卡 | 好友列表"
             ).withDesc("设置帮抽卡规则作用的好友名单。").also { collectToFriendList = it }
         )
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "sendFriendCard",
-                "送卡片好友列表(当前图鉴所有卡片)",
-                LinkedHashSet<String?>(),
-                AlipayUser::getFriendListAsMapperEntity
+                "送卡片好友列表(当前图鉴所有卡片)"
             ).withDesc("列表不为空时，会把当前图鉴可赠送的卡片和新抽到的三星卡送给列表中的首个有效好友。").also {
                 sendFriendCard = it
             }
@@ -763,7 +760,7 @@ class AntDodo : ModelTask() {
     }
 
     private fun resolveSendFriendCardTarget(): String? {
-        val configuredUsers = sendFriendCard?.value ?: emptySet()
+        val configuredUsers = sendFriendCard?.resolvedIds() ?: emptySet()
         if (configuredUsers.isEmpty()) {
             return null
         }
@@ -771,15 +768,14 @@ class AntDodo : ModelTask() {
         if (availableFriends.isEmpty()) {
             return null
         }
-        for (userId in configuredUsers) {
-            val safeUserId = FriendGuard.normalizeUserId(userId) ?: continue
+        for (safeUserId in configuredUsers) {
             if (FriendGuard.shouldSkipFriend(safeUserId, TAG, "神奇物种送卡")) {
                 continue
             }
             if (availableFriends.contains(safeUserId)) {
                 return safeUserId
             }
-            Log.dodo("神奇物种送卡跳过[${UserMap.getMaskName(safeUserId) ?: safeUserId}]：对方未开通神奇物种")
+            Log.dodo("神奇物种送卡跳过[${UserMap.getMaskName(safeUserId) ?: safeUserId}]：不在当前可赠送好友列表")
         }
         return null
     }
@@ -800,6 +796,7 @@ class AntDodo : ModelTask() {
                         val userId = friendList.optJSONObject(i)?.optString("userId").orEmpty()
                         if (userId.isNotBlank() && !FriendGuard.shouldSkipFriend(userId, TAG, "神奇物种好友校验")) {
                             availableFriends.add(userId)
+                            FriendCapabilityRecorder.record(userId, "DODO", FriendCapabilityState.OPEN, "AntDodo.queryFriend")
                         }
                     }
                     availableFriends
@@ -897,7 +894,7 @@ class AntDodo : ModelTask() {
                     if (FriendGuard.shouldSkipFriend(useId, TAG, "神奇物种帮抽卡")) {
                         continue
                     }
-                    var isCollectToFriend = collectToFriendList?.value?.contains(useId) ?: false
+                    var isCollectToFriend = collectToFriendList?.contains(useId) == true
                     if (collectToFriendType?.value == CollectToFriendType.DONT_COLLECT) {
                         isCollectToFriend = !isCollectToFriend
                     }

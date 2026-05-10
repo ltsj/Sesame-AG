@@ -3,7 +3,7 @@ package io.github.aoguai.sesameag.task.antSports
 import android.annotation.SuppressLint
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
-import io.github.aoguai.sesameag.entity.AlipayUser
+import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.model.BaseModel
@@ -12,14 +12,15 @@ import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.HourOfDayModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
-import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.StringModelField
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskCommon
 import io.github.aoguai.sesameag.util.*
 import io.github.aoguai.sesameag.util.FriendGuard
+import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONArray
 import org.json.JSONObject
@@ -257,7 +258,7 @@ class AntSports : ModelTask() {
     internal lateinit var battleForFriends: BooleanModelField
     private lateinit var battleAutoUnlockRoom: BooleanModelField
     private lateinit var battleForFriendType: ChoiceModelField
-    private lateinit var originBossIdList: SelectModelField
+    private lateinit var originBossIdList: FriendSelectionModelField
     private lateinit var sportsTasksField: BooleanModelField
     private lateinit var sportsEnergyBubble: BooleanModelField
 
@@ -452,11 +453,9 @@ class AntSports : ModelTask() {
             ).withDesc("决定好友列表是“选中抢”还是“选中不抢”，仅在开启抢好友时生效。").also { battleForFriendType = it }
         )
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "originBossIdList",
-                "抢好友 | 好友列表",
-                LinkedHashSet(),
-                AlipayUser::getFriendList
+                "抢好友 | 好友列表"
             ).withDesc("配置抢好友规则作用的好友名单，名单解释方式由“抢好友 | 动作”决定。").also { originBossIdList = it }
         )
 
@@ -4691,7 +4690,7 @@ class AntSports : ModelTask() {
     }
 
     private fun shouldRobClubMember(originBossId: String): Boolean {
-        var isTarget = originBossIdList.value?.contains(originBossId) == true
+        var isTarget = originBossIdList.contains(originBossId)
         if (battleForFriendType.value == BattleForFriendType.DONT_ROB) {
             isTarget = !isTarget
         }
@@ -4710,6 +4709,12 @@ class AntSports : ModelTask() {
             )
             return null
         }
+        FriendCapabilityRecorder.record(
+            candidate.originBossId,
+            "SPORTS",
+            FriendCapabilityState.OPEN,
+            "AntSports.queryClubMember"
+        )
         return clubMemberDetailJson.optJSONObject("member")
     }
 
