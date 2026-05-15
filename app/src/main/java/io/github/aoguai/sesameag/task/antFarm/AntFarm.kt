@@ -262,6 +262,7 @@ class AntFarm : ModelTask() {
     private var getFeedType: ChoiceModelField? = null
     internal var family: BooleanModelField? = null
     internal var familyOptions: SelectModelField? = null
+    internal var familyAssignStrategy: ChoiceModelField? = null
     internal var notInviteList: FriendSelectionModelField? = null
     private val giftFamilyDrawFragment: StringModelField? = null
     internal var paradiseCoinExchangeBenefit: BooleanModelField? = null
@@ -682,6 +683,15 @@ class AntFarm : ModelTask() {
                 LinkedHashSet<String?>(),
                 farmFamilyOption()
             ).withDesc("勾选允许自动执行的家庭任务类型。").also { familyOptions = it })
+        modelFields.addField(
+            ChoiceModelField(
+                "familyAssignStrategy",
+                "家庭 | 顶梁柱安排策略",
+                FamilyAssignStrategy.RANDOM,
+                FamilyAssignStrategy.nickNames
+            ).withDesc("顶梁柱特权安排成员的策略；默认随机安排，低贡献策略会优先安排今日亲密值最低的家庭成员。").also {
+                familyAssignStrategy = it
+            })
         modelFields.addField(
             FriendSelectionModelField(
                 "notInviteList",
@@ -5009,6 +5019,14 @@ class AntFarm : ModelTask() {
             const val GIVE: Int = 0
             const val RANDOM: Int = 1
             val nickNames: Array<String?> = arrayOf<String?>("选中赠送", "随机赠送")
+        }
+    }
+
+    interface FamilyAssignStrategy {
+        companion object {
+            const val RANDOM: Int = 0
+            const val LOWEST_TODAY_INTIMACY: Int = 1
+            val nickNames: Array<String?> = arrayOf<String?>("随机安排", "优先今日亲密值最低")
         }
     }
 

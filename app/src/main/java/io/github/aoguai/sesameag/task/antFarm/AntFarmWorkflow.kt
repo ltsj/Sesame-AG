@@ -167,7 +167,11 @@ internal suspend fun AntFarm.runFarmSocialWorkflow(
     }
 
     if (family?.value == true) {
-        AntFarmFamily.run(familyOptions!!, notInviteList!!)
+        AntFarmFamily.run(
+            familyOptions!!,
+            notInviteList!!,
+            familyAssignStrategy?.value ?: AntFarm.FamilyAssignStrategy.RANDOM
+        )
         tc.countDebug("家庭任务")
     }
 

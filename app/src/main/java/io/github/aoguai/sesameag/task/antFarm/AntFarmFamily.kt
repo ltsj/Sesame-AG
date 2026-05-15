@@ -7,6 +7,7 @@ import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
 import io.github.aoguai.sesameag.task.antFarm.AntFarm.AnimalFeedStatus
 import io.github.aoguai.sesameag.task.antFarm.AntFarm.AnimalInteractStatus
+import io.github.aoguai.sesameag.task.antFarm.AntFarm.FamilyAssignStrategy
 import io.github.aoguai.sesameag.task.antSports.AntSportsRpcCall
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
@@ -65,6 +66,14 @@ data object AntFarmFamily {
         DONATED_CONFIRMED(true, true),
         DONATED_UNCONFIRMED(true, false)
     }
+
+    private data class FamilyAssignCandidate(
+        val userId: String,
+        val userName: String,
+        val todayIntimateNum: Int,
+        val totalIntimateNum: Int,
+        val userDonateCount: Int
+    )
 
     private fun hasFamilyOption(familyOptions: SelectModelField, vararg optionKeys: String): Boolean {
         val values = familyOptions.value ?: return false
@@ -143,6 +152,90 @@ data object AntFarmFamily {
             Log.printStackTrace(TAG, "queryFamilyTreadMillState err:", t)
             null
         }
+    }
+
+    private fun JSONObject.optIntOrNull(key: String): Int? {
+        if (!has(key) || isNull(key)) {
+            return null
+        }
+        return optInt(key)
+    }
+
+    private fun normalizeAssignableUserIds(userIds: Collection<String>): List<String> {
+        val currentUid = UserMap.currentUid
+        return userIds.asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() && it != currentUid }
+            .distinct()
+            .toList()
+    }
+
+    private fun selectRandomAssignableUser(userIds: Collection<String>): String? {
+        val candidates = normalizeAssignableUserIds(userIds)
+        if (candidates.isEmpty()) {
+            return null
+        }
+        return candidates[RandomUtil.nextInt(0, candidates.size - 1)]
+    }
+
+    private fun selectLowestTodayIntimacyUser(userIds: Collection<String>): String? {
+        val candidateIds = normalizeAssignableUserIds(userIds)
+        if (candidateIds.isEmpty()) {
+            return null
+        }
+        val candidateIdSet = candidateIds.toSet()
+        val treadMillJo = queryFamilyTreadMillState() ?: run {
+            Log.farm("家庭任务🏡[使用顶梁柱特权] 获取家庭贡献信息失败，回退随机安排")
+            return null
+        }
+        val memberList = treadMillJo.optJSONArray("familyMemberInfoList") ?: run {
+            Log.farm("家庭任务🏡[使用顶梁柱特权] familyTreadMill 缺少 familyMemberInfoList，回退随机安排")
+            return null
+        }
+        val candidates = mutableListOf<FamilyAssignCandidate>()
+        for (index in 0 until memberList.length()) {
+            val member = memberList.optJSONObject(index) ?: continue
+            val userId = member.optString("userId").trim()
+            if (userId.isBlank() || userId == UserMap.currentUid || member.optBoolean("currentUser", false)) {
+                continue
+            }
+            if (!candidateIdSet.contains(userId)) {
+                continue
+            }
+            val todayIntimateNum = member.optIntOrNull("todayIntimateNum")
+            val totalIntimateNum = member.optIntOrNull("totalIntimateNum")
+            val userDonateCount = member.optIntOrNull("userDonateCount")
+            if (todayIntimateNum == null || totalIntimateNum == null || userDonateCount == null) {
+                Log.farm("家庭任务🏡[使用顶梁柱特权] 成员贡献字段不完整，回退随机安排")
+                return null
+            }
+            candidates.add(
+                FamilyAssignCandidate(
+                    userId = userId,
+                    userName = member.optString("userName").trim(),
+                    todayIntimateNum = todayIntimateNum,
+                    totalIntimateNum = totalIntimateNum,
+                    userDonateCount = userDonateCount
+                )
+            )
+        }
+        if (candidates.size < candidateIds.size) {
+            Log.farm("家庭任务🏡[使用顶梁柱特权] familyTreadMill 未返回完整家庭成员贡献信息，回退随机安排")
+            return null
+        }
+        val selected = candidates.sortedWith(
+            compareBy<FamilyAssignCandidate> { it.todayIntimateNum }
+                .thenBy { it.totalIntimateNum }
+                .thenBy { it.userDonateCount }
+                .thenBy { it.userId }
+        ).firstOrNull() ?: return null
+        val displayName = UserMap.getMaskName(selected.userId)
+            ?: selected.userName.ifBlank { selected.userId }
+        Log.farm(
+            "家庭任务🏡[使用顶梁柱特权] 优先安排今日亲密值最低成员[$displayName] " +
+                "today=${selected.todayIntimateNum}, total=${selected.totalIntimateNum}, donate=${selected.userDonateCount}"
+        )
+        return selected.userId
     }
 
     private fun resolveCurrentFamilyGroupId(enterRes: JSONObject): String {
@@ -323,9 +416,13 @@ data object AntFarmFamily {
     }
 
 
-    fun run(familyOptions: SelectModelField, notInviteList: FriendSelectionModelField) {
+    fun run(
+        familyOptions: SelectModelField,
+        notInviteList: FriendSelectionModelField,
+        familyAssignStrategy: Int = FamilyAssignStrategy.RANDOM
+    ) {
         try {
-            enterFamily(familyOptions, notInviteList)
+            enterFamily(familyOptions, notInviteList, familyAssignStrategy)
         } catch (e: Exception) {
             Log.printStackTrace(TAG, e)
         }
@@ -334,7 +431,11 @@ data object AntFarmFamily {
     /**
      * 进入家庭
      */
-    fun enterFamily(familyOptions: SelectModelField, notInviteList: FriendSelectionModelField) {
+    fun enterFamily(
+        familyOptions: SelectModelField,
+        notInviteList: FriendSelectionModelField,
+        familyAssignStrategy: Int = FamilyAssignStrategy.RANDOM
+    ) {
         try {
             groupId = ""
             groupName = ""
@@ -383,7 +484,7 @@ data object AntFarmFamily {
                     } else if (assignRights.optString("status") == "USED") {
                         Log.farm("家庭任务[使用顶梁柱特权] 今日已使用，跳过")
                     } else if (assignRights.optString("assignRightsOwner") == UserMap.currentUid) {
-                        assignFamilyMember(assignFamilyMemberInfo, familyUserIds)
+                        assignFamilyMember(assignFamilyMemberInfo, familyUserIds, familyAssignStrategy)
                     } else {
                         Log.farm("家庭任务[使用顶梁柱特权] 当前账号不是顶梁柱，跳过")
                     }
@@ -475,14 +576,21 @@ data object AntFarmFamily {
     /**
      * 顶梁柱
      */
-    fun assignFamilyMember(jsonObject: JSONObject, userIds: MutableList<String>) {
+    fun assignFamilyMember(
+        jsonObject: JSONObject,
+        userIds: MutableList<String>,
+        familyAssignStrategy: Int = FamilyAssignStrategy.RANDOM
+    ) {
         try {
-            userIds.remove(UserMap.currentUid)
-            //随机选一个家庭成员
-            if (userIds.isEmpty()) {
+            val beAssignUser = if (familyAssignStrategy == FamilyAssignStrategy.LOWEST_TODAY_INTIMACY) {
+                selectLowestTodayIntimacyUser(userIds) ?: selectRandomAssignableUser(userIds)
+            } else {
+                selectRandomAssignableUser(userIds)
+            }
+            if (beAssignUser.isNullOrBlank()) {
+                Log.farm("家庭任务🏡[使用顶梁柱特权] 无可安排家庭成员，跳过")
                 return
             }
-            val beAssignUser = userIds[RandomUtil.nextInt(0, userIds.size - 1)]
             //随机获取一个任务类型
             val assignConfigList = jsonObject.optJSONArray("assignConfigList")
             if (assignConfigList == null || assignConfigList.length() == 0) {
@@ -490,10 +598,23 @@ data object AntFarmFamily {
                 return
             }
             val assignConfig = assignConfigList.getJSONObject(RandomUtil.nextInt(0, assignConfigList.length() - 1))
-            val jo = JSONObject(AntFarmRpcCall.assignFamilyMember(assignConfig.getString("assignAction"), beAssignUser))
+            val assignAction = assignConfig.optString("assignAction")
+            val assignDesc = assignConfig.optString("assignDesc", assignAction)
+            if (assignAction.isBlank()) {
+                Log.farm("家庭任务[使用顶梁柱特权] assignAction 为空，跳过")
+                return
+            }
+            val jo = JSONObject(AntFarmRpcCall.assignFamilyMember(assignAction, beAssignUser))
             if (ResChecker.checkRes(TAG, jo)) {
-                Log.farm("家庭任务🏡[使用顶梁柱特权] ${assignConfig.getString("assignDesc")}")
+                val displayName = UserMap.getMaskName(beAssignUser) ?: beAssignUser
+                Log.farm("家庭任务🏡[使用顶梁柱特权] $assignDesc -> [$displayName]")
 //                val sendRes = JSONObject(AntFarmRpcCall.sendChat(assignConfig.getString("chatCardType"), beAssignUser))
+            } else {
+                val failMsg = jo.optString("resultDesc")
+                    .ifBlank { jo.optString("memo") }
+                    .ifBlank { jo.optString("errorMsg") }
+                    .ifBlank { jo.toString() }
+                Log.farm("家庭任务🏡[使用顶梁柱特权] $assignDesc 失败: $failMsg")
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, t)
