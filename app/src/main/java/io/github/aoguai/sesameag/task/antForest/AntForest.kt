@@ -1599,6 +1599,12 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
     }
 
+    private data class EnergyPvpInfoSnapshot(
+        val hasEntry: Boolean,
+        val hasReward: Boolean,
+        val battleStatus: String
+    )
+
     internal fun handleEnergyPvpChallenge() {
         if (energyPvpChallenge?.value != true) {
             return
@@ -1609,14 +1615,24 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
 
         try {
+            val pvpInfo = queryEnergyPvpInfoSnapshot()
             val homeResponse = AntForestRpcCall.queryPvpHomeInfo(queryWaitToReceive = true)
             if (homeResponse.isBlank()) {
                 Log.forest("1V1能量挑战赛：查询主页响应为空")
+                if (pvpInfo?.hasReward == true && receiveEnergyPvpRewards()) {
+                    Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE)
+                }
                 return
             }
             val homeObj = JSONObject(homeResponse)
             if (!ResChecker.checkRes(TAG + "查询1V1能量挑战赛失败:", homeObj)) {
                 Log.forest("1V1能量挑战赛查询失败: ${homeObj.optString("resultDesc", homeObj.optString("resultCode"))}")
+                if (pvpInfo?.hasReward == true) {
+                    Log.forest("1V1能量挑战赛：入口提示有待领奖励，主页查询失败后尝试直接领取")
+                    if (receiveEnergyPvpRewards()) {
+                        Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE)
+                    }
+                }
                 return
             }
 
@@ -1629,7 +1645,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             logEnergyPvpRecord("当前场次", currentRecord)
             logEnergyPvpRecord("上一场次", previousRecord)
 
-            if (waitRewardCount > 0 || hasUnreceivedReward) {
+            if (waitRewardCount > 0 || hasUnreceivedReward || pvpInfo?.hasReward == true) {
                 Log.forest("1V1能量挑战赛：发现待领取奖励 record=$waitRecordCount reward=$waitRewardCount，开始领取")
                 if (receiveEnergyPvpRewards()) {
                     Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE)
@@ -1637,7 +1653,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 return
             }
 
-            if (isPvpBattleActive(currentRecord) || isPvpBattleActive(previousRecord)) {
+            if (isPvpBattleActive(currentRecord) ||
+                isPvpBattleActive(previousRecord) ||
+                isPvpBattleStatusActive(pvpInfo?.battleStatus.orEmpty())
+            ) {
                 Log.forest("1V1能量挑战赛：仍在匹配/进行/结算中，保留后续重试")
                 return
             }
@@ -1649,6 +1668,36 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
     }
 
+    private fun queryEnergyPvpInfoSnapshot(): EnergyPvpInfoSnapshot? {
+        val response = AntForestRpcCall.queryEnergyPvpInfo(checkReward = true)
+        if (response.isBlank()) {
+            Log.forest("1V1能量挑战赛：查询入口响应为空")
+            return null
+        }
+        val obj = JSONObject(response)
+        if (!ResChecker.checkRes(TAG + "查询1V1能量挑战赛入口失败:", obj)) {
+            Log.forest("1V1能量挑战赛入口查询失败: ${obj.optString("resultDesc", obj.optString("resultCode"))}")
+            return null
+        }
+        val pvpInfo = obj.optJSONObject("combineHandlerVOMap")
+            ?.optJSONObject("energyPvpInfo")
+        if (pvpInfo == null) {
+            Log.forest("1V1能量挑战赛：入口未返回能量挑战信息")
+            return null
+        }
+
+        val battleStatus = pvpInfo.optString("battleStatus")
+        val hasEntry = pvpInfo.optBoolean("hasEntry", false)
+        val hasReward = pvpInfo.optBoolean("hasReward", false)
+        val attackerEnergy = pvpInfo.optInt("attackerEnergy", 0)
+        val defenderEnergy = pvpInfo.optInt("defenderEnergy", 0)
+        Log.forest(
+            "1V1能量挑战赛：入口 status[$battleStatus] entry[$hasEntry] reward[$hasReward] " +
+                    "energy[$attackerEnergy:$defenderEnergy]"
+        )
+        return EnergyPvpInfoSnapshot(hasEntry, hasReward, battleStatus)
+    }
+
     private fun receiveEnergyPvpRewards(): Boolean {
         val receiveResponse = AntForestRpcCall.receivePvpRewards()
         if (receiveResponse.isBlank()) {
@@ -1657,7 +1706,14 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
         val receiveObj = JSONObject(receiveResponse)
         if (!ResChecker.checkRes(TAG + "领取1V1能量挑战赛奖励失败:", receiveObj)) {
-            Log.forest("1V1能量挑战赛领取失败: ${receiveObj.optString("resultDesc", receiveObj.optString("resultCode"))}")
+            val resultCode = receiveObj.optString("resultCode")
+            val resultDesc = receiveObj.optString("resultDesc", resultCode)
+            if (isPvpRewardTerminalResult(resultCode, resultDesc)) {
+                Log.forest("1V1能量挑战赛领取终态: $resultDesc")
+                invalidateEnergyPvpCache()
+                return true
+            }
+            Log.forest("1V1能量挑战赛领取失败: $resultDesc")
             return false
         }
 
@@ -1694,9 +1750,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         val rewards = record?.optJSONArray("rewardDetailList") ?: return false
         for (i in 0 until rewards.length()) {
             val reward = rewards.optJSONObject(i) ?: continue
-            val status = reward.optString("rewardStatus")
+            val status = reward.optString("rewardStatus").uppercase(Locale.ROOT)
             if (status.equals("UNRECEIVED", ignoreCase = true) ||
-                status.equals("WAIT_RECEIVE", ignoreCase = true)
+                status.equals("WAIT_RECEIVE", ignoreCase = true) ||
+                status.contains("WAIT") && status.contains("RECEIV")
             ) {
                 return true
             }
@@ -1705,10 +1762,22 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     }
 
     private fun isPvpBattleActive(record: JSONObject?): Boolean {
-        val status = record?.optString("battleStatus").orEmpty()
+        return isPvpBattleStatusActive(record?.optString("battleStatus").orEmpty())
+    }
+
+    private fun isPvpBattleStatusActive(status: String): Boolean {
         return status.equals("MATCHING", ignoreCase = true) ||
                 status.equals("PROGRESSING", ignoreCase = true) ||
                 status.equals("SETTLING", ignoreCase = true)
+    }
+
+    private fun isPvpRewardTerminalResult(resultCode: String, resultDesc: String): Boolean {
+        val text = "$resultCode $resultDesc"
+        return text.contains("已领取") ||
+                text.contains("已发放") ||
+                text.contains("无可领取") ||
+                text.contains("没有可领取") ||
+                text.contains("重复领取")
     }
 
     private fun logEnergyPvpRecord(label: String, record: JSONObject?) {
