@@ -57,7 +57,6 @@ import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
-import io.github.aoguai.sesameag.util.RpcCache
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.TimeCounter
 import io.github.aoguai.sesameag.util.TimeTriggerEvaluator
@@ -2315,7 +2314,7 @@ class AntFarm : ModelTask() {
             val title = question.getString("title")
 
             var answer: String? = null
-            var cacheHit = false
+            var farmAnswerMatched = false
             val cacheKey = "$title|$today"
 
             // 答题来源顺序：目标端预告答案缓存 -> AnswerAI 已验证正确缓存 -> AI 请求。
@@ -2328,18 +2327,18 @@ class AntFarm : ModelTask() {
                     val option = labels.getString(i)
                     if (option == cachedAnswer) {
                         answer = option
-                        cacheHit = true
+                        farmAnswerMatched = true
                         break
                     }
                 }
 
                 // 2. 如果精确匹配失败，尝试模糊匹配
-                if (!cacheHit && cachedAnswer != null) {
+                if (!farmAnswerMatched && cachedAnswer != null) {
                     for (i in 0..<labels.length()) {
                         val option = labels.getString(i)
                         if (option.contains(cachedAnswer) || cachedAnswer.contains(option)) {
                             answer = option
-                            cacheHit = true
+                            farmAnswerMatched = true
                             Log.farm("⚠️ 目标端答案缓存模糊匹配成功：$cachedAnswer → $option")
                             break
                         }
@@ -2348,7 +2347,7 @@ class AntFarm : ModelTask() {
             }
 
             // 目标端缓存未命中后，AnswerAI 内部会先查已验证正确缓存，再请求 AI。
-            if (!cacheHit) {
+            if (!farmAnswerMatched) {
                 Log.farm("目标端答案缓存未命中，进入AI答题链路：$title")
                 answer = AnswerAI.getAnswer(title, answerList, LogChannel.FARM.loggerName)
                 if (answer.isNullOrEmpty()) {
@@ -3746,7 +3745,6 @@ class AntFarm : ModelTask() {
         }
         // 2) 同步最新状态，确保消耗速度、已吃量、食槽上限为最新
         syncAnimalStatus(ownerFarmId)
-        RpcCache.invalidate(RPC_LIST_FARM_TOOL)
         listFarmTool()
         if (AnimalBuff.ACCELERATING.name == ownerAnimal.animalBuff) {
             Log.farm("加速卡效果在本轮开始前已生效，继续按剩余时间和上限判断是否追加使用")
@@ -3909,7 +3907,6 @@ class AntFarm : ModelTask() {
         try {
             Log.farm("道具🎭[${toolType.nickName()}]返回“道具使用无效”，开始刷新状态复核")
             syncAnimalStatus(targetFarmId)
-            RpcCache.invalidate(RPC_LIST_FARM_TOOL)
             listFarmTool()
             val toolCountAfter = getFarmToolCount(toolType, forceRefresh = false)
             if (toolCountAfter in 0 until toolCountBefore) {
@@ -3988,7 +3985,6 @@ class AntFarm : ModelTask() {
                     hasFence = true
                     fenceCountDown = 86400
                 }
-                RpcCache.invalidate(RPC_LIST_FARM_TOOL)
                 if (toolType != ToolType.ACCELERATETOOL || !hasNextToolId) {
                     listFarmTool()
                 }

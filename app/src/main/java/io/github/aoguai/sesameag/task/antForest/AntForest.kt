@@ -61,7 +61,6 @@ import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.Notify.updateRunningLastExec
 import io.github.aoguai.sesameag.util.Notify.updateRunningStatus
 import io.github.aoguai.sesameag.util.ResChecker
-import io.github.aoguai.sesameag.util.RpcCache
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.TimeCounter
 import io.github.aoguai.sesameag.util.TimeFormatter
@@ -1701,7 +1700,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             val resultDesc = receiveObj.optString("resultDesc", resultCode)
             if (isPvpRewardTerminalResult(resultCode, resultDesc)) {
                 Log.forest("1V1能量挑战赛领取终态: $resultDesc")
-                invalidateEnergyPvpCache()
                 return true
             }
             Log.forest("1V1能量挑战赛领取失败: $resultDesc")
@@ -1710,7 +1708,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
         val rewards = receiveObj.optJSONArray("receivedRewards")
         Log.forest("1V1能量挑战赛奖励领取成功：${summarizePvpRewards(rewards)}")
-        invalidateEnergyPvpCache()
         queryEnergyPvpRecordsAfterReceive()
         return true
     }
@@ -1728,13 +1725,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         } catch (t: Throwable) {
             Log.error(TAG, "1V1能量挑战赛奖励复查失败: ${t.message}")
         }
-    }
-
-    private fun invalidateEnergyPvpCache() {
-        RpcCache.invalidate("alipay.antforest.forest.h5.queryPvpHomeInfo")
-        RpcCache.invalidate("alipay.antforest.forest.h5.receivePvpRewards")
-        RpcCache.invalidate("alipay.antforest.forest.h5.queryPvpBattleRecords")
-        RpcCache.invalidate("alipay.antforest.forest.h5.queryMiscInfo")
     }
 
     private fun hasUnreceivedPvpReward(record: JSONObject?): Boolean {
@@ -4778,17 +4768,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
     }
 
-    private fun invalidateEnergyRainCache(includeTaskList: Boolean = false) {
-        RpcCache.invalidate("alipay.antforest.forest.h5.queryEnergyRainHome")
-        RpcCache.invalidate("alipay.antforest.forest.h5.queryEnergyRainEndGameList")
-        if (includeTaskList) {
-            RpcCache.invalidate("alipay.antforest.forest.h5.takeLookEnd")
-            RpcCache.invalidate("alipay.antforest.forest.h5.queryTaskList")
-        }
-    }
-
     private fun queryEnergyRainTakeLookEndPayload(): JSONObject? {
-        invalidateEnergyRainCache(includeTaskList = true)
         return queryForestTaskSource("takeLookEnd(backFromEnergyRain)") {
             AntForestRpcCall.takeLookEnd(AntForestRpcCall.BACK_FROM_ENERGY_RAIN_SOURCE)
         }
@@ -4799,7 +4779,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             if (receiveForestTaskAward?.value != true) {
                 return
             }
-            invalidateEnergyRainCache(includeTaskList = true)
             val taskResponse = queryForestTaskSource("take_look_end_task_list(backFromEnergyRain)") {
                 AntForestRpcCall.queryTakeLookEndTaskList(AntForestRpcCall.BACK_FROM_ENERGY_RAIN_SOURCE)
             } ?: return
@@ -6041,7 +6020,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     resultCode = combineResponse.optString("resultCode")
                     if ("SUCCESS" == resultCode) {
                         Log.forest("成功合成动物💡[$name]")
-                        RpcCache.invalidate("alipay.antforest.forest.h5.queryAnimalAndPiece")
                         animalId = id
                         GlobalThreadPools.sleepCompat(100) // 等待一段时间再查询
                         continue
@@ -6937,7 +6915,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         try {
             suspend fun hasPlayableEnergyRainChance(): Boolean {
                 return try {
-                    invalidateEnergyRainCache()
                     val jo = JSONObject(AntForestRpcCall.queryEnergyRainHome())
                     ResChecker.checkRes(TAG, jo) && jo.optBoolean("canPlayToday", false)
                 } catch (t: Throwable) {
@@ -6972,7 +6949,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         }
                     }
                     if (usePropBag(jo)) {
-                        invalidateEnergyRainCache()
                         Log.forest("成功使用一个能量雨道具: $propType")
                         usedAny = true
                         if (propType == "LIMIT_TIME_ENERGY_RAIN_CHANCE") {
@@ -7001,7 +6977,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                                 delay(1000)
                                 val joExchanged = findPropBag(queryPropList(true), propType)
                                 if (joExchanged != null && usePropBag(joExchanged)) {
-                                    invalidateEnergyRainCache()
                                     getLimitTimeEnergyRainFlag(joExchanged)?.let { Status.setFlagToday(it) }
                                     usedAny = true
                                     delay(1000)
@@ -7079,8 +7054,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             var hasReportedTaskThisRun = false
             while (refreshRound < 3) {
                 refreshRound++
-                // queryGameList 默认缓存 5 秒，补任务后必须主动回源才能看到最新开箱额度。
-                RpcCache.invalidate("com.alipay.charitygamecenter.queryGameList")
 
                 val response = AntForestRpcCall.queryGameList()
                 val jo = JSONObject(response)
