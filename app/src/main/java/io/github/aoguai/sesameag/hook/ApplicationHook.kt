@@ -579,6 +579,28 @@ class ApplicationHook {
                 "schedulerTasks=${UnifiedScheduler.activeTaskCount()}"
         }
 
+        internal fun discardCoveredAlarmPollTriggers(): Int {
+            val runStartedAt = mainTaskRunStartedAtMs
+            val runCompletedAt = mainTaskRunCompletedAtMs
+            val scheduleUpdatedAt = mainTaskNextScheduleUpdatedAtMs
+            if (runStartedAt <= 0 || runCompletedAt <= 0 || scheduleUpdatedAt < runStartedAt) {
+                return 0
+            }
+
+            val removed = ApplicationHookConstants.removePendingTriggers("alarm_poll_covered_by_main_task") { trigger ->
+                trigger.type == ApplicationHookConstants.TriggerType.ALARM_POLL &&
+                    trigger.priority == ApplicationHookConstants.TriggerPriority.LOW &&
+                    trigger.createdAtMs <= runCompletedAt
+            }
+            val context = appContext
+            removed.forEach { trigger ->
+                trigger.persistentScheduleId
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { scheduleId -> PersistentScheduleRegistry.markFired(context, scheduleId) }
+            }
+            return removed.size
+        }
+
         private fun shouldCaptureReloadState(reason: String): Boolean {
             return reason == "config_reload" || reason == "broadcast_restart"
         }
@@ -689,6 +711,15 @@ class ApplicationHook {
         @Volatile
         var nextExecutionTime: Long = 0
 
+        @Volatile
+        private var mainTaskRunStartedAtMs: Long = 0
+
+        @Volatile
+        private var mainTaskRunCompletedAtMs: Long = 0
+
+        @Volatile
+        private var mainTaskNextScheduleUpdatedAtMs: Long = 0
+
         private val appVisibilityCallbacks = object : ComponentCallbacks2 {
             override fun onTrimMemory(level: Int) {
                 if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
@@ -753,12 +784,15 @@ class ApplicationHook {
                     }
 
                     lastExecTime = currentTime
+                    mainTaskRunStartedAtMs = currentTime
+                    mainTaskRunCompletedAtMs = 0
                     trigger?.persistentScheduleId?.takeIf { it.isNotBlank() }?.let { scheduleId ->
                         PersistentScheduleRegistry.markFired(appContext, scheduleId)
                     }
 
                     val models = Model.modelArray.filterNotNull()
                     CoroutineTaskRunner(models).run(isFirst = true)
+                    mainTaskRunCompletedAtMs = System.currentTimeMillis()
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -807,6 +841,7 @@ class ApplicationHook {
                     }
                 }
                 nextExecutionTime = if (targetTime > 0) targetTime else (baseTime + delayMillis)
+                mainTaskNextScheduleUpdatedAtMs = System.currentTimeMillis()
                 ensureScheduler()
                 val context = appContext
                 if (context != null) {
