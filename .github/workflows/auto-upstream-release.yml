@@ -1,0 +1,331 @@
+name: Auto Build Upstream Release
+run-name: Auto build ${{ inputs.tag || 'latest upstream release' }}
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream tag to build (empty means latest)
+        required: false
+        type: string
+      rebuild:
+        description: Rebuild even when the fork release already exists
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-upstream-release-${{ inputs.tag || 'latest' }}
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: Sesame-AG/Sesame-AG
+  CI: "true"
+  JAVA_DISTRIBUTION: oracle
+  JAVA_VERSION: 17.0.1
+  ANDROID_API_LEVEL: "37"
+  ANDROID_PLATFORM: "android-37.0"
+  ANDROID_BUILD_TOOLS: "37.0.0"
+  RELEASE_DIR: app/build/outputs/apk/release
+  STAGING_DIR: app/build/outputs/apk/auto-release
+  ASSET_DIR: app/build/outputs/apk/auto-release-assets
+
+jobs:
+  resolve:
+    name: Resolve upstream release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version_name: ${{ steps.release.outputs.version_name }}
+      commit_sha: ${{ steps.release.outputs.commit_sha }}
+      should_build: ${{ steps.release.outputs.should_build }}
+    steps:
+      - name: Checkout fork metadata
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and sync upstream tag
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+          REBUILD: ${{ inputs.rebuild }}
+        run: |
+          set -euo pipefail
+
+          git remote add upstream \
+            "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --force upstream '+refs/tags/*:refs/tags/upstream/*'
+
+          tag="${REQUESTED_TAG:-}"
+          if [[ -z "${tag}" ]]; then
+            upstream_ref="$(git tag --list 'upstream/[0-9]*-*' \
+              --sort=-version:refname | head -n1)"
+            tag="${upstream_ref#upstream/}"
+          fi
+
+          if [[ ! "${tag}" =~ ^[0-9]+-.+$ ]]; then
+            echo "Invalid upstream release tag: ${tag}" >&2
+            exit 1
+          fi
+
+          upstream_ref="refs/tags/upstream/${tag}"
+          if ! git show-ref --verify --quiet "${upstream_ref}"; then
+            echo "Upstream tag does not exist: ${tag}" >&2
+            exit 1
+          fi
+
+          tag_object="$(git rev-parse "${upstream_ref}")"
+          commit_sha="$(git rev-parse "${upstream_ref}^{commit}")"
+          existing_object="$(git ls-remote --tags --refs origin \
+            "refs/tags/${tag}" | awk '{print $1}')"
+
+          if [[ -z "${existing_object}" ]]; then
+            git update-ref "refs/tags/${tag}" "${tag_object}"
+            git push origin "refs/tags/${tag}"
+          elif [[ "${existing_object}" != "${tag_object}" ]]; then
+            echo "Fork tag ${tag} does not match the upstream tag; " \
+              "refusing to overwrite it." >&2
+            exit 1
+          fi
+
+          should_build="true"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
+              >/dev/null 2>&1; then
+            should_build="false"
+          fi
+          if [[ "${REBUILD:-false}" == "true" ]]; then
+            should_build="true"
+          fi
+
+          version_name="${tag#*-}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "version_name=${version_name}" >> "${GITHUB_OUTPUT}"
+          echo "commit_sha=${commit_sha}" >> "${GITHUB_OUTPUT}"
+          echo "should_build=${should_build}" >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "## Upstream release check"
+            echo
+            echo "- Upstream: \`${UPSTREAM_REPOSITORY}\`"
+            echo "- Tag: \`${tag}\`"
+            echo "- Commit: \`${commit_sha}\`"
+            echo "- Build required: \`${should_build}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  build:
+    name: Build and publish signed APKs
+    needs: resolve
+    if: needs.resolve.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout upstream release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve.outputs.tag }}
+
+      - name: Validate release metadata
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          EXPECTED_COMMIT_SHA: ${{ needs.resolve.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+
+          configured_version="$(sed -n 's/^appVersion=//p' \
+            gradle.properties | head -n1 | tr -d '\r')"
+          tag_version_code="${RELEASE_TAG%%-*}"
+          tag_version_name="${RELEASE_TAG#*-}"
+          version_code="$(git rev-list --count HEAD | tr -d '\n')"
+          commit_sha="$(git rev-parse HEAD)"
+
+          [[ "${configured_version}" == "${tag_version_name}" ]]
+          [[ "${version_code}" == "${tag_version_code}" ]]
+          [[ "${commit_sha}" == "${EXPECTED_COMMIT_SHA}" ]]
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          architecture: x64
+          check-latest: false
+          cache: gradle
+
+      - name: Pin Gradle Java home
+        shell: bash
+        run: echo "ORG_GRADLE_JAVA_HOME=${JAVA_HOME}" >> "${GITHUB_ENV}"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ""
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}"
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          gradle-version: wrapper
+
+      - name: Build release APKs
+        shell: bash
+        env:
+          OFFICIAL_SIGNING_CERT_SHA256: ${{ vars.OFFICIAL_SIGNING_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace \
+            -PofficialSigningCertSha256="${OFFICIAL_SIGNING_CERT_SHA256}" \
+            assembleRelease
+
+      - name: Stage unsigned APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "${STAGING_DIR}" "${ASSET_DIR}"
+          mkdir -p "${STAGING_DIR}"
+          mapfile -t apks < <(find "${RELEASE_DIR}" -maxdepth 1 \
+            -type f -name '*.apk' | sort)
+          if [[ ${#apks[@]} -eq 0 ]]; then
+            echo "No release APKs found in ${RELEASE_DIR}" >&2
+            exit 1
+          fi
+          cp "${apks[@]}" "${STAGING_DIR}/"
+
+      - name: Sign APKs
+        id: sign_apks
+        uses: ilharp/sign-android-release@v2
+        with:
+          releaseDir: ${{ env.STAGING_DIR }}
+          signingKey: ${{ secrets.ANDROID_SIGNING_KEY }}
+          keyAlias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          buildToolsVersion: ${{ env.ANDROID_BUILD_TOOLS }}
+
+      - name: Verify signing certificate
+        shell: bash
+        env:
+          SIGNED_FILES: ${{ steps.sign_apks.outputs.signedFiles }}
+          EXPECTED_FINGERPRINT: ${{ vars.OFFICIAL_SIGNING_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+
+          android_sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          apksigner_path="${android_sdk_root}/build-tools/"\
+            "${ANDROID_BUILD_TOOLS}/apksigner"
+          [[ -x "${apksigner_path}" ]]
+
+          IFS=':' read -r -a files <<< "${SIGNED_FILES}"
+          verified=0
+          for file in "${files[@]}"; do
+            [[ -n "${file}" && -f "${file}" ]] || continue
+            fingerprint="$(
+              "${apksigner_path}" verify --verbose --print-certs "${file}" |
+                awk -F': ' '/certificate SHA-256 digest:/ {
+                  value=$NF; gsub(/:/, "", value); print toupper(value)
+                }'
+            )"
+            [[ "${fingerprint}" == "${EXPECTED_FINGERPRINT}" ]]
+            verified=$((verified + 1))
+          done
+          [[ ${verified} -gt 0 ]]
+
+      - name: Prepare release assets
+        id: assets
+        shell: bash
+        env:
+          SIGNED_FILES: ${{ steps.sign_apks.outputs.signedFiles }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          UPSTREAM_COMMIT: ${{ needs.resolve.outputs.commit_sha }}
+          SIGNING_FINGERPRINT: ${{ vars.OFFICIAL_SIGNING_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${ASSET_DIR}"
+          IFS=':' read -r -a files <<< "${SIGNED_FILES}"
+          for file in "${files[@]}"; do
+            [[ -n "${file}" && -f "${file}" ]] || continue
+            cp "${file}" "${ASSET_DIR}/"
+          done
+          (
+            cd "${ASSET_DIR}"
+            sha256sum -- *.apk > SHA256SUMS
+          )
+          {
+            echo "Sesame-AG fork build signing certificate"
+            echo
+            echo "SHA-256 certificate fingerprint (uppercase, no colons):"
+            echo "${SIGNING_FINGERPRINT}"
+          } > "${ASSET_DIR}/SIGNING-CERTIFICATE.txt"
+          {
+            echo "Automated fork build from "\
+              "[${UPSTREAM_REPOSITORY}](https://github.com/${UPSTREAM_REPOSITORY})."
+            echo
+            echo "- Upstream tag: [${RELEASE_TAG}]"\
+              "(https://github.com/${UPSTREAM_REPOSITORY}/releases/tag/${RELEASE_TAG})"
+            echo "- Upstream commit: [${UPSTREAM_COMMIT}]"\
+              "(https://github.com/${UPSTREAM_REPOSITORY}/commit/${UPSTREAM_COMMIT})"
+            echo "- Signing certificate: \`${SIGNING_FINGERPRINT}\`"
+            echo
+            echo "> This is an independently signed fork build, "\
+              "not an official upstream binary."
+          } > "${RUNNER_TEMP}/release-notes.md"
+          echo "notes=${RUNNER_TEMP}/release-notes.md" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish fork release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          name: Sesame-AG ${{ needs.resolve.outputs.version_name }}
+          body_path: ${{ steps.assets.outputs.notes }}
+          files: ${{ env.ASSET_DIR }}/*
+          fail_on_unmatched_files: true
+          make_latest: true
+          overwrite_files: true
+
+      - name: Write build summary
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          {
+            echo "## Fork release published"
+            echo
+            echo "- Release: "\
+              "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+            echo "- APK signing fingerprint: "\
+              "\`${{ vars.OFFICIAL_SIGNING_CERT_SHA256 }}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  current:
+    name: Release already exists
+    needs: resolve
+    if: needs.resolve.outputs.should_build != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report current release
+        shell: bash
+        run: |
+          echo "Release ${{ needs.resolve.outputs.tag }} already exists; "\
+            "nothing to build."
