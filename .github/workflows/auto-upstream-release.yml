@@ -140,8 +140,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          configured_version="$(sed -n 's/^appVersion=//p' \
-            gradle.properties | head -n1 | tr -d '\r')"
+          configured_version="$(sed -n 's/^appVersion=//p' gradle.properties \
+            | head -n1 | tr -d '\r')"
           tag_version_code="${RELEASE_TAG%%-*}"
           tag_version_name="${RELEASE_TAG#*-}"
           version_code="$(git rev-list --count HEAD | tr -d '\n')"
@@ -232,8 +232,7 @@ jobs:
           set -euo pipefail
 
           android_sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-          apksigner_path="${android_sdk_root}/build-tools/"\
-            "${ANDROID_BUILD_TOOLS}/apksigner"
+          apksigner_path="${android_sdk_root}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner"
           [[ -x "${apksigner_path}" ]]
 
           IFS=':' read -r -a files <<< "${SIGNED_FILES}"
@@ -279,13 +278,14 @@ jobs:
             echo "${SIGNING_FINGERPRINT}"
           } > "${ASSET_DIR}/SIGNING-CERTIFICATE.txt"
           {
+            upstream_url="https://github.com/${UPSTREAM_REPOSITORY}"
+            release_url="${upstream_url}/releases/tag/${RELEASE_TAG}"
+            commit_url="${upstream_url}/commit/${UPSTREAM_COMMIT}"
             echo "Automated fork build from "\
-              "[${UPSTREAM_REPOSITORY}](https://github.com/${UPSTREAM_REPOSITORY})."
+              "[${UPSTREAM_REPOSITORY}](${upstream_url})."
             echo
-            echo "- Upstream tag: [${RELEASE_TAG}]"\
-              "(https://github.com/${UPSTREAM_REPOSITORY}/releases/tag/${RELEASE_TAG})"
-            echo "- Upstream commit: [${UPSTREAM_COMMIT}]"\
-              "(https://github.com/${UPSTREAM_REPOSITORY}/commit/${UPSTREAM_COMMIT})"
+            echo "- Upstream tag: [${RELEASE_TAG}](${release_url})"
+            echo "- Upstream commit: [${UPSTREAM_COMMIT}](${commit_url})"
             echo "- Signing certificate: \`${SIGNING_FINGERPRINT}\`"
             echo
             echo "> This is an independently signed fork build, "\
@@ -312,8 +312,7 @@ jobs:
           {
             echo "## Fork release published"
             echo
-            echo "- Release: "\
-              "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+            echo "- Release: ${fork_url}"
             echo "- APK signing fingerprint: "\
               "\`${{ vars.OFFICIAL_SIGNING_CERT_SHA256 }}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
